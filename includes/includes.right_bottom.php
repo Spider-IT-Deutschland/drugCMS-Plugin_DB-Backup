@@ -2,12 +2,12 @@
 if (!defined('CON_FRAMEWORK')) {
     die('Illegal call');
 }
-
-$plugin_name = "db_backup";
  
 if ((!$perm->have_perm_area_action($plugin_name, $plugin_name)) && (!$cronjob)) {
     exit;
 }
+
+$plugin_name = "db_backup";
 
 plugin_include($plugin_name, 'includes/config.plugin.php');
 
@@ -52,7 +52,7 @@ if ((!$pathfinder) || (!$permissionfinder)) {
             } else {
                 $oTpl->set('s', 'PATH', $cfg['path']['contenido_fullhtml']);
                 $oTpl->set('s', 'LABEL_WAIT', i18n("Please wait", $plugin_name) . '&hellip;');
-                $oTpl->set('s', 'MESSAGE', i18n("Processed lines", $plugin_name) . ': 0');
+                $oTpl->set('s', 'MESSAGE', '');#i18n("Processed lines", $plugin_name) . ': 0');
                 $oTpl->set('s', 'SCRIPT', 'document.location.href="' . $cfg['path']['contenido_fullhtml'] . 'plugins/db_backup/includes/ajax.restore.php?mode=1&action=2&file=' . $sFile . '&start=' . $fStart . '&line=0&wait=' . i18n("Please wait", $plugin_name) . '&processed=' . i18n("Processed lines", $plugin_name) . '&contenido=' . $contenido . '";');
                 $oTpl->generate($cfg[$plugin_name]['templates']['ajax_restore']);
                 die();
@@ -139,7 +139,7 @@ function backup_tables($file, $host, $user, $pass, $name, $current_table = '', $
         # Create the header
         $return  = '-- drugCMS SQL Dump' . "\n";
         $return .= '-- drugCMS ' . $cfg['version'] . "\n";
-        $return .= '-- (c) 2013 Spider IT Deutschland' . "\n";
+        $return .= '-- (c) 2013-' . date('Y') . ' Spider IT Deutschland' . "\n";
         $return .= '--' . "\n";
         $return .= '-- Host: ' . $host . "\n";
         $return .= '-- Backup creation date: ' . date('r') . "\n";
@@ -192,133 +192,108 @@ function backup_tables($file, $host, $user, $pass, $name, $current_table = '', $
                     # while restoring the database, stopping the restore process
                     $db->query('SHOW CREATE TABLE `' . $table . '`');
                     $db->next_record();
-                    $row2 = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
+                    $row2 = $db->toArray(DB_SQL_Abstract::FETCH_NUMERIC);
                     $return .= str_replace('CREATE TABLE `', 'CREATE TABLE IF NOT EXISTS `', $row2[1]) . ";\n";
                 } else {
                     $return .= 'DROP TABLE IF EXISTS `' . $table . '`;' . "\n";
                     $db->query('SHOW CREATE TABLE `' . $table . '`');
                     $db->next_record();
-                    $row2 = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
+                    $row2 = $db->toArray(DB_SQL_Abstract::FETCH_NUMERIC);
                     $return .= $row2[1] . ";\n";
                 }
+                if ($gz) {
+                    gzwrite($handle, $return);
+                } else {
+                    fwrite($handle, $return);
+                }
+                $return = '';
                 # Only backup data which is supposed to be permanent
                 if (!in_array(substr($table, strlen($cfg['sql']['sqlprefix'])), array('_code', '_inuse', '_online_user', '_phplib_active_sessions'))) {
                     $return .= "\n";
                     $return .= '--' . "\n";
                     $return .= '-- Data for table `' . $table . '`' . "\n";
                     $return .= '--' . "\n";
-                    if ($gz) {
-                        gzwrite($handle, $return);
-                    } else {
-                        fwrite($handle, $return);
-                    }
-                    $return = '';
                 }
             }
             # Only backup data which is supposed to be permanent
             if (!in_array(substr($table, strlen($cfg['sql']['sqlprefix'])), array('_code', '_inuse', '_online_user', '_phplib_active_sessions'))) {
                 # Get the key (first) column in the table (we sort it on this to export
                 # each row just once if we split because of the time management)
-                $db->query('SHOW COLUMNS FROM ' . $table . ' WHERE EXTRA LIKE "%auto_increment%"');
+                $db->query('SHOW COLUMNS FROM ' . $table);
                 $db->next_record();
-                $row = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
-                $key_column = $db->f(0);
-                if (!strlen($key_column)) {
-                    $db->query('SHOW COLUMNS FROM ' . $table);
-                    $db->next_record();
-                    $row = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
-                    $key_column = $row[0];
-                }
+                $row = $db->toArray(DB_SQL_Abstract::FETCH_NUMERIC);
+                $key_column = $row[0];
                 # Get the amount of rows in this table
                 $db->query('SELECT COUNT(' . $key_column . ') AS num_rows FROM ' . $table);
                 $db->next_record();
                 $num_rows = $db->f('num_rows');
+                # Get the columns
+                $db->query('SELECT * FROM ' . $table . ' ORDER BY ' . $key_column . ' LIMIT 0, 1');
+                if ($db->next_record()) {
+                    $row = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
+                    $return .= "\n";
+                    $return .= 'INSERT INTO `' . $table . '` (';
+                    $keys = array();
+                    foreach ($row as $key => $value) {
+                        if (!is_numeric($key)) {
+                            $keys[] = '`' . $key . '`';
+                        }
+                    }
+                    $return .= implode(', ', $keys);
+                    $return .= ') VALUES';
+                }
                 # Query the data
-                $bDone = false;
-                while (!$bDone) {
-                    $db->query('SELECT * FROM ' . $table . ' ORDER BY ' . $key_column . ' LIMIT ' . $current_row . ', ' . ((($num_rows - $current_row) > 250) ? 250 : ($num_rows - $current_row)));
-                    $num_recs = 0;
-                    $num_fields = $db->num_fields();
-                    if ($db->next_record()) {
-                        $num_recs ++;
-                        $row = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
-                        $return .= "\n";
-                        $return .= 'INSERT INTO `' . $table . '` (';
-                        $keys = array();
-                        foreach ($row as $key => $value) {
-                            if (!is_numeric($key)) {
-                                $keys[] = '`' . $key . '`';
-                            }
-                        }
-                        $return .= implode(', ', $keys) . ') VALUES' . "\n";
-                        $return .= '(';
-                        for ($i = 0; $i < $num_fields; $i++) {
-                            if (!isset($row[$i])) {
-                                $return .= 'NULL';
-                            } elseif (is_numeric($row[$i])) {
-                                $return .= $row[$i];
-                            } else {
-                                $return .= "'" . str_replace(array("'", '\\', "\r", "\n"), array("''", '\\\\', "\\r", "\\n"), $row[$i]) . "'";
-                            }
-                            if ($i < ($num_fields - 1)) {
-                                $return .= ', ';
-                            }
-                        }
-                        $return .= ')';
-                        # Time management
-                        if (((time() - $iStart) >= $iMET) || ($current_row == ($num_rows - 1)) || ($num_recs == 250)) {
-                            $return .= ';' . "\n";
+                $db->query('SELECT * FROM ' . $table . ' ORDER BY ' . $key_column . ' LIMIT ' . $current_row . ', ' . ($num_rows - $current_row));
+                $num_fields = $db->num_fields();
+                while ($db->next_record()) {
+                    $row = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
+                    $return .= "\n" . '(';
+                    for ($i = 0; $i < $num_fields; $i++) {
+                        if (!isset($row[$i])) {
+                            $return .= 'NULL';
+                        } elseif (is_numeric($row[$i])) {
+                            $return .= $row[$i];
                         } else {
-                            $return .= ',' . "\n";
+                            $return .= "'" . str_replace(array("'", '\\', "\r", "\n"), array("''", '\\\\', "\\r", "\\n"), $row[$i]) . "'";
                         }
+                        if ($i < ($num_fields - 1)) {
+                            $return .= ', ';
+                        }
+                    }
+                    $return .= ')';
+                    $current_row ++;
+                    # Time management
+                    if ((time() - $iStart) >= $iMET) {
+                        $return .= ';';
                         if ($gz) {
                             gzwrite($handle, $return);
                         } else {
                             fwrite($handle, $return);
                         }
-                        $return = '';
-                        $current_row ++;
+                        return array('table' => $table, 'row' => $current_row);
                     }
-                    while ($db->next_record()) {
-                        $num_recs ++;
-                        $row = $db->toArray(DB_SQL_Abstract::FETCH_BOTH);
-                        $return .= '(';
-                        for ($i = 0; $i < $num_fields; $i++) {
-                            if (!isset($row[$i])) {
-                                $return .= 'NULL';
-                            } elseif (is_numeric($row[$i])) {
-                                $return .= $row[$i];
-                            } else {
-                                $return .= "'" . str_replace(array("'", '\\', "\r", "\n"), array("''", '\\\\', "\\r", "\\n"), $row[$i]) . "'";
-                            }
-                            if ($i < ($num_fields - 1)) {
-                                $return .= ', ';
-                            }
-                        }
-                        $return .= ')';
-                        # Time management
-                        if (((time() - $iStart) >= $iMET) || ($current_row == ($num_rows - 1)) || ($num_recs == 250)) {
-                            $return .= ';' . "\n";
-                        } else {
-                            $return .= ',' . "\n";
-                        }
+                    elseif (strlen($return) > 30000) {
+                        $return .= ';';
                         if ($gz) {
                             gzwrite($handle, $return);
                         } else {
                             fwrite($handle, $return);
                         }
-                        $return = '';
-                        $current_row ++;
-                        # Time management
-                        if ((time() - $iStart) >= $iMET) {
-                            $db->disconnect();
-                            return array('table' => $table, 'row' => $current_row);
-                        }
+                        $return = "\n" . 'INSERT INTO `' . $table . '` (';
+                        $return .= implode(', ', $keys);
+                        $return .= ') VALUES';
                     }
-                    if ($current_row == $num_rows) {
-                        $bDone = true;
+                    else {
+                        $return .= ',';
                     }
                 }
+                $return = (((strlen($return) > 1) && (substr($return, -1) == ',')) ? substr($return, 0, -1) . ';' : '');
+                if ($gz) {
+                    gzwrite($handle, $return);
+                } else {
+                    fwrite($handle, $return);
+                }
+                $return = '';
                 $current_row = 0; # Reset for the next table
             }
         }
@@ -344,7 +319,6 @@ function backup_tables($file, $host, $user, $pass, $name, $current_table = '', $
         fwrite($handle, $return . "\n");
         fclose($handle);
     }
-    $db->disconnect();
     return true;
 }
 ?>
